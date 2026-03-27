@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* FCT Energy Green Palette */
+  --primary: 142 70% 40%;       /* Light Green matching FCT logo */
+  --primary-foreground: 0 0% 100%;
+  
+  --secondary: 140 30% 96%;     /* Light Green Gray */
+  --secondary-foreground: 142 25% 27%;
+  
+  --muted: 140 30% 96.1%;
+  --muted-foreground: 142 16.3% 46.9%;
+  
+  --accent: 142 60% 94%;        /* Very light green for hover states */
+  --accent-foreground: 142 47.4% 11.2%;
+  
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 140 40% 98%;
+
+  --border: 140 20% 91.4%;
+  --input: 140 20% 91.4%;
+  --ring: 142 70% 40%;
+  
+  --radius: 0.75rem;
+
+  --background: 0 0% 100%;
+  --foreground: 142 30% 10%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 142 30% 10%;
+
+  --font-sans: 'Inter', sans-serif;
+  --font-display: 'Playfair Display', serif;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-foreground font-sans antialiased selection:bg-primary/20;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display tracking-tight text-foreground;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl shadow-black/5;
+  }
+  
+  .sidebar-link {
+    @apply flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 hover:bg-slate-100 hover:text-primary hover:translate-x-1;
+  }
+  
+  .sidebar-link.active {
+    @apply bg-primary/10 text-primary font-semibold shadow-sm;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-lg shadow-primary/25 transition-all hover:bg-primary/90 hover:shadow-primary/40 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    height: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 2px;
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

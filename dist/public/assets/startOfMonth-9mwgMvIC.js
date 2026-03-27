@@ -1,0 +1,1 @@
+import{c as n}from"./index-DKrshsl7.js";import{t as e}from"./toDate-qOSwr3PX.js";const i=n("TrendingDown",[["polyline",{points:"22 17 13.5 8.5 8.5 13.5 2 7",key:"1r2t7k"}],["polyline",{points:"16 17 22 17 22 11",key:"11uiuu"}]]);function a(o){const t=e(o);return t.setDate(1),t.setHours(0,0,0,0),t}export{i as T,a as s};
