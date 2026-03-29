@@ -175,6 +175,7 @@ export const employees = pgTable("employees", {
   pendingShiftId: integer("pending_shift_id"),
   shiftEffectiveDate: text("shift_effective_date"),
   locationPermission: text("location_permission").default("office"), // office, remote, hybrid
+  remoteLoginAuthorized: boolean("remote_login_authorized").default(false),
   biometricDeviceId: text("biometric_device_id"),
   attendanceExempt: boolean("attendance_exempt").default(false),
   locationCode: text("location_code"),
@@ -260,11 +261,15 @@ export const leaveRequests = pgTable("leave_requests", {
   startDate: date("start_date").notNull(),
   endDate: date("end_date").notNull(),
   days: decimal("days").default("1"),
+  halfDayPeriod: text("half_day_period"),
   reason: text("reason"),
-  status: text("status").default("pending"), // pending, approved, rejected, cancelled
+  medicalCertificateUrl: text("medical_certificate_url"),
+  status: text("status").default("pending"),
   approvedBy: integer("approved_by"),
   approvedAt: timestamp("approved_at"),
   remarks: text("remarks"),
+  cancelledAt: timestamp("cancelled_at"),
+  cancelledBy: integer("cancelled_by"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

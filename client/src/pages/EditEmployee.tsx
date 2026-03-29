@@ -144,6 +144,7 @@ export default function EditEmployee() {
         noticeBuyoutPayments: employee.noticeBuyoutPayments,
         shiftId: employee.shiftId,
         locationPermission: employee.locationPermission || "office",
+        remoteLoginAuthorized: employee.remoteLoginAuthorized || false,
         biometricDeviceId: employee.biometricDeviceId || "",
         attendanceExempt: employee.attendanceExempt || false,
       });
@@ -491,6 +492,17 @@ export default function EditEmployee() {
                       <SelectItem value="hybrid">Hybrid</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Remote Login Authorized (MD/CEO Approval)</Label>
+                  <Select value={formData.remoteLoginAuthorized ? "true" : "false"} onValueChange={(v) => updateField("remoteLoginAuthorized", v === "true")}>
+                    <SelectTrigger data-testid="select-remoteLoginAuthorized"><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="false">No</SelectItem>
+                      <SelectItem value="true">Yes (Prior Authorization Granted)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Required for Gurgaon employees to use remote/hybrid login</p>
                 </div>
                 <div className="space-y-2">
                   <Label>Biometric Device ID</Label>

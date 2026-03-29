@@ -467,37 +467,22 @@ export async function registerRoutes(
   });
 
   app.post("/api/entities", async (req, res) => {
-    const user = req.user as any;
-    const userEmail = user?.email || user?.claims?.email;
-    if (userEmail) {
-      const emp = await storage.getEmployeeByEmail(userEmail);
-      const roles = (emp?.accessRole || "employee").split(",").map((r: string) => r.trim());
-      if (!roles.includes("admin")) return res.status(403).json({ message: "Admin access required" });
-    }
+    const { authorized } = await checkUserRole(req, ["admin"]);
+    if (!authorized) return res.status(403).json({ message: "Admin access required" });
     const entity = await storage.createEntity(req.body);
     res.status(201).json(entity);
   });
 
   app.patch("/api/entities/:id", async (req, res) => {
-    const user = req.user as any;
-    const userEmail = user?.email || user?.claims?.email;
-    if (userEmail) {
-      const emp = await storage.getEmployeeByEmail(userEmail);
-      const roles = (emp?.accessRole || "employee").split(",").map((r: string) => r.trim());
-      if (!roles.includes("admin")) return res.status(403).json({ message: "Admin access required" });
-    }
+    const { authorized } = await checkUserRole(req, ["admin"]);
+    if (!authorized) return res.status(403).json({ message: "Admin access required" });
     const entity = await storage.updateEntity(Number(req.params.id), req.body);
     res.json(entity);
   });
 
   app.delete("/api/entities/:id", async (req, res) => {
-    const user = req.user as any;
-    const userEmail = user?.email || user?.claims?.email;
-    if (userEmail) {
-      const emp = await storage.getEmployeeByEmail(userEmail);
-      const roles = (emp?.accessRole || "employee").split(",").map((r: string) => r.trim());
-      if (!roles.includes("admin")) return res.status(403).json({ message: "Admin access required" });
-    }
+    const { authorized } = await checkUserRole(req, ["admin"]);
+    if (!authorized) return res.status(403).json({ message: "Admin access required" });
     await storage.deleteEntity(Number(req.params.id));
     res.status(204).send();
   });
@@ -533,6 +518,14 @@ export async function registerRoutes(
   // Salary Structures
   app.get("/api/salary-structures", async (req, res) => {
     const structures = await storage.getSalaryStructures();
+    const entityIdParam = req.query.entityId ? String(req.query.entityId) : null;
+    if (entityIdParam) {
+      const entityIds = entityIdParam.split(',').map(Number).filter(n => !isNaN(n));
+      if (entityIds.length > 0) {
+        res.json(structures.filter(s => s.entityId && entityIds.includes(s.entityId)));
+        return;
+      }
+    }
     res.json(structures);
   });
 
@@ -890,7 +883,19 @@ export async function registerRoutes(
     const { employeeId, location, latitude, longitude } = api.attendance.checkIn.input.parse(req.body);
     const today = format(new Date(), 'yyyy-MM-dd');
     const now = new Date();
-    
+
+    const emp = await storage.getEmployee(employeeId);
+    if (emp) {
+      const locCode = (emp.locationCode || emp.location || '').toLowerCase();
+      const locPerm = (emp.locationPermission || 'office').toLowerCase();
+      const isGurgaon = locCode.includes('gurgaon') || locCode.includes('gurugram');
+      if (isGurgaon && (locPerm === 'remote' || locPerm === 'hybrid') && !emp.remoteLoginAuthorized) {
+        return res.status(403).json({
+          message: "Remote login is blocked for Gurgaon location. Prior Authorization from MD & CEO is required. Please contact HR to enable remote access."
+        });
+      }
+    }
+
     const existing = await storage.getAttendanceByDate(employeeId, today);
     
     if (existing) {
@@ -933,13 +938,23 @@ export async function registerRoutes(
     const checkInHour = now.getHours();
     const checkInMin = now.getMinutes();
     const totalMinutes = checkInHour * 60 + checkInMin;
-    const shiftStart = 9 * 60 + 30; // 09:30
-    const lateThreshold = 10 * 60; // 10:00
+
+    let shiftStartMinutes = 9 * 60 + 30;
+    let lateThresholdMinutes = 10 * 60;
+    const empData = emp || await storage.getEmployee(employeeId);
+    if (empData?.shiftId) {
+      const shift = await storage.getShift(empData.shiftId);
+      if (shift?.startTime) {
+        const [sh, sm] = shift.startTime.split(':').map(Number);
+        shiftStartMinutes = sh * 60 + sm;
+        lateThresholdMinutes = shiftStartMinutes + 30;
+      }
+    }
 
     let status = 'present';
-    if (totalMinutes > lateThreshold) {
+    if (totalMinutes > lateThresholdMinutes) {
       status = 'half_day';
-    } else if (totalMinutes > shiftStart) {
+    } else if (totalMinutes > shiftStartMinutes) {
       let cycleStart: Date, cycleEnd: Date;
       if (now.getDate() >= 26) {
         cycleStart = new Date(now.getFullYear(), now.getMonth(), 26);
@@ -1015,14 +1030,24 @@ export async function registerRoutes(
 
     const checkOutHour = checkOutTime.getHours();
     const checkOutMin = checkOutTime.getMinutes();
-    const totalMinutes = checkOutHour * 60 + checkOutMin;
-    const shiftEnd = 18 * 60 + 30; // 18:30
-    const earlyThreshold = 18 * 60; // 18:00
+    const coTotalMinutes = checkOutHour * 60 + checkOutMin;
+
+    let shiftEndMinutes = 18 * 60 + 30;
+    let earlyThresholdMinutes = 18 * 60;
+    const coEmp = await storage.getEmployee(employeeId);
+    if (coEmp?.shiftId) {
+      const shift = await storage.getShift(coEmp.shiftId);
+      if (shift?.endTime) {
+        const [eh, em] = shift.endTime.split(':').map(Number);
+        shiftEndMinutes = eh * 60 + em;
+        earlyThresholdMinutes = shiftEndMinutes - 30;
+      }
+    }
 
     let status = existing.status || 'present';
-    if (totalMinutes < earlyThreshold && !['half_day', 'late_deducted'].includes(status)) {
+    if (coTotalMinutes < earlyThresholdMinutes && !['half_day', 'late_deducted'].includes(status)) {
       status = 'half_day';
-    } else if (totalMinutes < shiftEnd && totalMinutes >= earlyThreshold && (status === 'present' || status === 'late')) {
+    } else if (coTotalMinutes < shiftEndMinutes && coTotalMinutes >= earlyThresholdMinutes && (status === 'present' || status === 'late')) {
       let cycleStart: Date, cycleEnd: Date;
       if (checkOutTime.getDate() >= 26) {
         cycleStart = new Date(checkOutTime.getFullYear(), checkOutTime.getMonth(), 26);
@@ -1038,11 +1063,7 @@ export async function registerRoutes(
         l.date !== today &&
         (l.status === 'early_departure' || l.status === 'early_deducted')
       ).length;
-      const cycleLateCount = cycleLogs.filter(l =>
-        l.status === 'late' || l.status === 'late_deducted'
-      ).length;
-      const totalGraceUsed = cycleLateCount + cycleEarlyCount;
-      status = totalGraceUsed >= 3 ? 'early_deducted' : 'early_departure';
+      status = cycleEarlyCount >= 3 ? 'early_deducted' : 'early_departure';
     }
 
     if (parseFloat(workHours) < 4.5) {
@@ -1217,9 +1238,10 @@ export async function registerRoutes(
           graceInstances: 3,
           lateGraceWindow: "09:30 AM - 10:00 AM",
           earlyGraceWindow: "06:00 PM - 06:30 PM",
-          lateDeduction: "1/3rd day salary after 3rd instance",
-          afterTenDeduction: "Half-day salary deduction",
-          beforeSixDeduction: "Half-day salary deduction",
+          lateDeduction: "1/3rd day salary after 3rd grace late instance per cycle",
+          earlyDeduction: "1/3rd day salary after 3rd grace early instance per cycle",
+          afterTenDeduction: "Half-day salary deduction (Major Late)",
+          beforeSixDeduction: "Half-day salary deduction (Major Early)",
           weeklyOff: "All Sundays + 2nd & 4th Saturdays",
           attendanceCycle: "26th to 25th"
         }
@@ -1605,7 +1627,7 @@ export async function registerRoutes(
             } else if (attRecord && attRecord.status === 'late_deducted') {
               lopDays += 1/3;
             } else if (attRecord && attRecord.status === 'early_deducted') {
-              lopDays += 0.5;
+              lopDays += 1/3;
             }
           }
         }
@@ -1619,6 +1641,181 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("Cycle LOP calculation error:", err);
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Attendance Lock Status (locks on 26th of every month)
+  app.get("/api/attendance-lock-status", async (req, res) => {
+    const now = new Date();
+    const dayOfMonth = now.getDate();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    const lockDate = new Date(currentYear, currentMonth, 26);
+    const isLocked = dayOfMonth >= 26;
+
+    const cycleStart = isLocked
+      ? `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-26`
+      : `${currentMonth === 0 ? currentYear - 1 : currentYear}-${String(currentMonth === 0 ? 12 : currentMonth).padStart(2, '0')}-26`;
+    const cycleEnd = isLocked
+      ? `${currentMonth === 11 ? currentYear + 1 : currentYear}-${String(currentMonth === 11 ? 1 : currentMonth + 2).padStart(2, '0')}-25`
+      : `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-25`;
+
+    res.json({
+      isLocked,
+      lockDate: lockDate.toISOString().split('T')[0],
+      cycleStart,
+      cycleEnd,
+      message: isLocked
+        ? `Attendance updates are locked for the cycle ${cycleStart} to ${cycleEnd}. Any unmarked absences will be processed as LWP.`
+        : `Attendance portal is open until the 25th. Lock date: ${lockDate.toISOString().split('T')[0]}.`
+    });
+  });
+
+  // Auto-LWP Processing (marks unapproved absences as LWP after 26th)
+  app.post("/api/admin/auto-lwp-process", async (req, res) => {
+    try {
+      const user = req.user as any;
+      const userEmail = user?.email || user?.claims?.email;
+      if (!userEmail) return res.status(401).json({ error: "Unauthorized" });
+      const currentEmp = await storage.getEmployeeByEmail(userEmail);
+      const roles = (currentEmp?.accessRole || '').split(',').map((r: string) => r.trim());
+      if (!roles.includes('admin') && !roles.includes('hr') && !roles.includes('hr_manager') && !roles.includes('payroll_team')) {
+        return res.status(403).json({ error: "Admin/HR/Payroll access required" });
+      }
+
+      const month = req.body.month || new Date().getMonth() + 1;
+      const year = req.body.year || new Date().getFullYear();
+
+      const absentResult = await pool.query(
+        `SELECT a.id, a.employee_id, a.date, a.status FROM attendance a
+         WHERE EXTRACT(MONTH FROM a.date) = $1 AND EXTRACT(YEAR FROM a.date) = $2
+         AND a.status IN ('absent', 'A')
+         AND NOT EXISTS (
+           SELECT 1 FROM leave_requests lr
+           WHERE lr.employee_id = a.employee_id
+           AND lr.status = 'approved'
+           AND a.date BETWEEN lr.start_date AND lr.end_date
+         )`,
+        [month, year]
+      );
+
+      let converted = 0;
+      const allTypes = await storage.getLeaveTypes();
+      const lopType = allTypes.find(t => t.code === 'LOP');
+
+      for (const record of absentResult.rows) {
+        await pool.query(
+          `UPDATE attendance SET status = 'lwp', remarks = COALESCE(remarks, '') || ' [Auto-LWP: Unapproved absence]' WHERE id = $1`,
+          [record.id]
+        );
+
+        if (lopType && record.employee_id) {
+          const balYear = new Date().getFullYear();
+          const balances = await storage.getLeaveBalances(record.employee_id);
+          const lopBal = balances.find(b => b.leaveTypeId === lopType.id && b.year === balYear);
+          if (lopBal) {
+            const newUsed = parseFloat(lopBal.used || "0") + 1;
+            await storage.updateLeaveBalanceUsed(lopBal.id, newUsed.toString(), "0");
+          }
+        }
+        converted++;
+      }
+
+      res.json({
+        message: `Auto-LWP processing completed for ${month}/${year}`,
+        converted,
+        total: absentResult.rows.length,
+      });
+    } catch (err: any) {
+      console.error("Auto-LWP process error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/admin/absconding-alerts", async (req, res) => {
+    try {
+      const { authorized } = await checkUserRole(req, ["admin", "hr_manager"]);
+      if (!authorized) return res.status(403).json({ error: "HR/Admin access required" });
+
+      const employees = await storage.getEmployees();
+      const activeEmployees = employees.filter(e => e.status === 'active');
+      const holidays = await storage.getHolidays();
+      const holidayDates = new Set(holidays.map(h => h.date));
+
+      const isWeeklyOff = (dateStr: string) => {
+        const d = new Date(dateStr + 'T00:00:00');
+        const day = d.getDay();
+        if (day === 0) return true;
+        if (day === 6) {
+          const weekOfMonth = Math.ceil(d.getDate() / 7);
+          return weekOfMonth === 2 || weekOfMonth === 4;
+        }
+        return false;
+      };
+
+      const today = new Date();
+      const alerts: Array<{ employeeId: number; employeeName: string; employeeCode: string; department: string; consecutiveAbsentDays: number; absentFrom: string }> = [];
+
+      for (const emp of activeEmployees) {
+        if (emp.attendanceExempt) continue;
+        let consecutiveAbsent = 0;
+        let absentFrom = '';
+        const cursor = new Date(today);
+
+        for (let i = 0; i < 30; i++) {
+          cursor.setDate(cursor.getDate() - 1);
+          const dateStr = format(cursor, 'yyyy-MM-dd');
+
+          if (isWeeklyOff(dateStr) || holidayDates.has(dateStr)) continue;
+
+          const att = await storage.getAttendanceByDate(emp.id, dateStr);
+          const hasLeave = await pool.query(
+            `SELECT 1 FROM leave_requests WHERE employee_id = $1 AND status = 'approved' AND $2 BETWEEN start_date AND end_date LIMIT 1`,
+            [emp.id, dateStr]
+          );
+          const hasOd = await pool.query(
+            `SELECT 1 FROM on_duty_requests WHERE employee_id = $1 AND status = 'approved' AND date = $2 LIMIT 1`,
+            [emp.id, dateStr]
+          );
+
+          if (!att && hasLeave.rows.length === 0 && hasOd.rows.length === 0) {
+            consecutiveAbsent++;
+            absentFrom = dateStr;
+          } else {
+            break;
+          }
+        }
+
+        if (consecutiveAbsent >= 5) {
+          alerts.push({
+            employeeId: emp.id,
+            employeeName: `${emp.firstName} ${emp.lastName || ''}`.trim(),
+            employeeCode: emp.employeeCode || '',
+            department: emp.department || '',
+            consecutiveAbsentDays: consecutiveAbsent,
+            absentFrom,
+          });
+
+          try {
+            const hrEmployees = activeEmployees.filter(e => {
+              const roles = (e.accessRole || '').split(',').map((r: string) => r.trim());
+              return roles.includes('hr_manager') || roles.includes('hr') || roles.includes('admin');
+            });
+            for (const hr of hrEmployees) {
+              if (hr.email) {
+                const detail = `<strong>${emp.firstName} ${emp.lastName || ''}</strong> (${emp.employeeCode || 'N/A'}) has been absent without approved leave for <strong>${consecutiveAbsent} consecutive working days</strong> since ${absentFrom}. This may indicate absconding. Please investigate immediately.`;
+                sendAttendanceAlertEmail(hr.email, `${hr.firstName} ${hr.lastName || ''}`.trim(), 'absconding', detail).catch(() => {});
+              }
+            }
+          } catch (e) { console.error("Absconding alert email error:", e); }
+        }
+      }
+
+      res.json({ alerts, totalChecked: activeEmployees.length });
+    } catch (err: any) {
+      console.error("Absconding alerts error:", err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -1653,7 +1850,24 @@ export async function registerRoutes(
       const input = api.leave.create.input.parse(req.body);
       const startDate = new Date(input.startDate);
       const endDate = new Date(input.endDate);
-      let days = input.days ? parseFloat(input.days) : Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+      const allHolidays = await storage.getHolidays();
+      const holidayDates = new Set(allHolidays.map(h => h.date));
+      let computedDays = 0;
+      if (input.days && parseFloat(input.days) === 0.5) {
+        computedDays = 0.5;
+      } else {
+        const cursor = new Date(startDate);
+        while (cursor <= endDate) {
+          const dow = cursor.getDay();
+          const dateStr = cursor.toISOString().split('T')[0];
+          if (dow !== 0 && dow !== 6 && !holidayDates.has(dateStr)) {
+            computedDays++;
+          }
+          cursor.setDate(cursor.getDate() + 1);
+        }
+      }
+      let days = computedDays > 0 ? computedDays : (input.days ? parseFloat(input.days) : Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1);
 
       // --- Duplicate leave date validation ---
       const existingLeaves = await storage.getLeaveRequests(input.employeeId);
@@ -1690,6 +1904,39 @@ export async function registerRoutes(
             message: `Earned Leave (EL) is only available after completing 180 days of service (as per the Factories Act). You will be eligible from ${eligibilityDate}.` 
           });
         }
+
+        const exitRes = await pool.query(
+          `SELECT id FROM exit_records WHERE employee_id = $1 AND clearance_status != 'completed'`,
+          [input.employeeId]
+        );
+        const isOnNotice = exitRes.rows.length > 0;
+
+        if (isOnNotice && ['earned', 'casual', 'comp_off'].includes(input.leaveType)) {
+          const labelMap: Record<string, string> = { earned: 'Earned Leave (EL)', casual: 'Casual Leave (CL)', comp_off: 'Comp Off (CO)' };
+          return res.status(400).json({
+            message: `${labelMap[input.leaveType]} cannot be availed during notice period. As per company policy, this leave type is not allowed after resignation/separation has been initiated.`
+          });
+        }
+
+        if (isOnNotice && ['sick', 'bereavement', 'lop'].includes(input.leaveType)) {
+          (input as any).requiresVpApproval = true;
+        }
+
+        if (input.leaveType === 'sick' && days >= 2 && !input.medicalCertificateUrl) {
+          return res.status(400).json({
+            message: `Medical certificate is mandatory for Sick Leave (SL) of 2 or more consecutive days. Please upload a medical certificate to proceed.`
+          });
+        }
+
+        if (input.leaveType === 'casual' && days > 2) {
+          if (daysSinceJoiningAtStart < 180) {
+            return res.status(400).json({
+              message: `Casual Leave (CL) cannot exceed 2 days at a time. Since you are not yet eligible for EL (requires 180 days of service), please reduce the duration to 2 days or less.`
+            });
+          }
+          input.leaveType = 'earned';
+          (input as any).autoConverted = true;
+        }
       }
 
       const leaveTypeMap: Record<string, string> = {
@@ -1703,6 +1950,7 @@ export async function registerRoutes(
       const leave = await storage.createLeaveRequest({
         ...input,
         days: days.toString(),
+        halfDayPeriod: (req.body as any).halfDayPeriod || null,
         leaveTypeId: matchedType?.id || null,
       });
       res.status(201).json(leave);
@@ -1828,6 +2076,263 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/leaves/:id/cancel", async (req, res) => {
+    try {
+      const leaveId = Number(req.params.id);
+      const currentUser = req.user as any;
+      const currentUserEmail = currentUser?.email || currentUser?.claims?.email;
+      if (!currentUserEmail) return res.status(401).json({ error: "Unauthorized" });
+      const currentEmp = await storage.getEmployeeByEmail(currentUserEmail);
+      if (!currentEmp) return res.status(403).json({ error: "Employee not found" });
+
+      const existingLeave = await storage.getLeaveRequestById(leaveId);
+      if (!existingLeave) return res.status(404).json({ error: "Leave request not found" });
+
+      const currentRoles = (currentEmp.accessRole || "employee").split(",").map((r: string) => r.trim());
+      const isAdminOrHR = currentRoles.includes("admin") || currentRoles.includes("hr") || currentRoles.includes("hr_manager");
+      if (existingLeave.employeeId !== currentEmp.id && !isAdminOrHR) {
+        return res.status(403).json({ error: "You can only cancel your own leave requests" });
+      }
+
+      if (existingLeave.status === 'cancelled' || existingLeave.status === 'rejected') {
+        return res.status(400).json({ error: `Leave is already ${existingLeave.status}` });
+      }
+
+      const wasApproved = existingLeave.status === 'approved';
+      const leave = await storage.updateLeaveStatus(leaveId, 'cancelled', req.body.remarks || 'Cancelled by employee');
+
+      await pool.query(
+        `UPDATE leave_requests SET cancelled_at = NOW(), cancelled_by = $1 WHERE id = $2`,
+        [currentEmp.id, leaveId]
+      );
+
+      if (wasApproved && existingLeave.leaveTypeId && existingLeave.employeeId) {
+        const year = new Date(existingLeave.startDate).getFullYear();
+        const days = parseFloat(existingLeave.days || "1");
+        const balances = await storage.getLeaveBalances(existingLeave.employeeId);
+        const existingBal = balances.find(b => b.leaveTypeId === existingLeave.leaveTypeId && b.year === year);
+
+        if (existingBal) {
+          const newUsed = Math.max(parseFloat(existingBal.used || "0") - days, 0);
+          const leaveType = (await storage.getLeaveTypes()).find(t => t.id === existingLeave.leaveTypeId);
+          const total = parseFloat(existingBal.accrued || "0") + parseFloat(existingBal.opening || "0");
+          const newBalance = Math.max(total - newUsed, 0);
+          await storage.updateLeaveBalanceUsed(existingBal.id, newUsed.toString(), newBalance.toString());
+        }
+      }
+
+      res.json(leave);
+    } catch (err: any) {
+      console.error("Leave cancel error:", err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // --- Leave Automation Endpoints ---
+
+  // Quarterly EL Credit (4.5 days per quarter, pro-rata for new joiners)
+  app.post("/api/admin/leave-credit-el-quarterly", async (req, res) => {
+    try {
+      const user = req.user as any;
+      const userEmail = user?.email || user?.claims?.email;
+      if (!userEmail) return res.status(401).json({ error: "Unauthorized" });
+      const currentEmp = await storage.getEmployeeByEmail(userEmail);
+      const roles = (currentEmp?.accessRole || '').split(',').map((r: string) => r.trim());
+      if (!roles.includes('admin') && !roles.includes('hr') && !roles.includes('hr_manager')) {
+        return res.status(403).json({ error: "Admin/HR access required" });
+      }
+
+      const year = new Date().getFullYear();
+      const quarter = req.body.quarter || Math.ceil((new Date().getMonth() + 1) / 3);
+      const allTypes = await storage.getLeaveTypes();
+      const elType = allTypes.find(t => t.code === 'EL');
+      if (!elType) return res.status(404).json({ error: "EL leave type not found" });
+
+      const employees = await storage.getEmployees();
+      const activeEmployees = employees.filter((e: any) => e.status === 'active');
+      let credited = 0;
+      const results: any[] = [];
+
+      for (const emp of activeEmployees) {
+        const joinDate = emp.joinDate ? new Date(emp.joinDate) : null;
+        if (!joinDate) continue;
+
+        const daysSinceJoining = Math.floor((new Date().getTime() - joinDate.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysSinceJoining < 180) {
+          results.push({ employeeId: emp.id, name: `${emp.firstName} ${emp.lastName || ''}`, status: 'skipped', reason: 'Less than 180 days of service' });
+          continue;
+        }
+
+        const quarterStart = new Date(year, (quarter - 1) * 3, 1);
+        const quarterEnd = new Date(year, quarter * 3, 0);
+        let daysToCredit = 4.5;
+
+        if (joinDate > quarterStart && joinDate <= quarterEnd) {
+          const remainingDays = Math.floor((quarterEnd.getTime() - joinDate.getTime()) / (1000 * 60 * 60 * 24));
+          const totalQuarterDays = Math.floor((quarterEnd.getTime() - quarterStart.getTime()) / (1000 * 60 * 60 * 24));
+          daysToCredit = Math.round((remainingDays / totalQuarterDays) * 4.5 * 2) / 2;
+        }
+
+        if (daysToCredit <= 0) continue;
+
+        const balances = await storage.getLeaveBalances(emp.id);
+        const existingBal = balances.find(b => b.leaveTypeId === elType.id && b.year === year);
+
+        if (existingBal) {
+          const newAccrued = parseFloat(existingBal.accrued || "0") + daysToCredit;
+          const newBalance = parseFloat(existingBal.balance || "0") + daysToCredit;
+          await storage.updateLeaveBalanceFields(existingBal.id, { accrued: newAccrued.toString(), balance: newBalance.toString() });
+        } else {
+          await storage.createLeaveBalance({
+            employeeId: emp.id, leaveTypeId: elType.id, year,
+            opening: "0", accrued: daysToCredit.toString(), used: "0", balance: daysToCredit.toString(),
+          });
+        }
+        credited++;
+        results.push({ employeeId: emp.id, name: `${emp.firstName} ${emp.lastName || ''}`, status: 'credited', days: daysToCredit });
+      }
+
+      res.json({ message: `EL quarterly credit completed for Q${quarter} ${year}`, credited, total: activeEmployees.length, results });
+    } catch (err: any) {
+      console.error("EL quarterly credit error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Bi-annual CL/SL Credit (3.5 days on Jan 1 & Jul 1, pro-rata for new joiners)
+  app.post("/api/admin/leave-credit-cl-sl", async (req, res) => {
+    try {
+      const user = req.user as any;
+      const userEmail = user?.email || user?.claims?.email;
+      if (!userEmail) return res.status(401).json({ error: "Unauthorized" });
+      const currentEmp = await storage.getEmployeeByEmail(userEmail);
+      const roles = (currentEmp?.accessRole || '').split(',').map((r: string) => r.trim());
+      if (!roles.includes('admin') && !roles.includes('hr') && !roles.includes('hr_manager')) {
+        return res.status(403).json({ error: "Admin/HR access required" });
+      }
+
+      const year = new Date().getFullYear();
+      const half = req.body.half || (new Date().getMonth() < 6 ? 1 : 2);
+      const allTypes = await storage.getLeaveTypes();
+      const clType = allTypes.find(t => t.code === 'CL');
+      const slType = allTypes.find(t => t.code === 'SL');
+      if (!clType || !slType) return res.status(404).json({ error: "CL or SL leave type not found" });
+
+      const employees = await storage.getEmployees();
+      const activeEmployees = employees.filter((e: any) => e.status === 'active');
+      let credited = 0;
+      const results: any[] = [];
+
+      for (const emp of activeEmployees) {
+        const joinDate = emp.joinDate ? new Date(emp.joinDate) : null;
+        if (!joinDate) continue;
+
+        const halfStart = half === 1 ? new Date(year, 0, 1) : new Date(year, 6, 1);
+        const halfEnd = half === 1 ? new Date(year, 5, 30) : new Date(year, 11, 31);
+        let daysToCredit = 3.5;
+
+        if (joinDate > halfStart && joinDate <= halfEnd) {
+          const remainingDays = Math.floor((halfEnd.getTime() - joinDate.getTime()) / (1000 * 60 * 60 * 24));
+          const totalHalfDays = Math.floor((halfEnd.getTime() - halfStart.getTime()) / (1000 * 60 * 60 * 24));
+          daysToCredit = Math.round((remainingDays / totalHalfDays) * 3.5 * 2) / 2;
+        }
+        if (joinDate > halfEnd) daysToCredit = 0;
+        if (daysToCredit <= 0) continue;
+
+        for (const leaveType of [clType, slType]) {
+          const balances = await storage.getLeaveBalances(emp.id);
+          const existingBal = balances.find(b => b.leaveTypeId === leaveType.id && b.year === year);
+
+          if (existingBal) {
+            const newAccrued = parseFloat(existingBal.accrued || "0") + daysToCredit;
+            const newBalance = parseFloat(existingBal.balance || "0") + daysToCredit;
+            await storage.updateLeaveBalanceFields(existingBal.id, { accrued: newAccrued.toString(), balance: newBalance.toString() });
+          } else {
+            await storage.createLeaveBalance({
+              employeeId: emp.id, leaveTypeId: leaveType.id, year,
+              opening: "0", accrued: daysToCredit.toString(), used: "0", balance: daysToCredit.toString(),
+            });
+          }
+        }
+        credited++;
+        results.push({ employeeId: emp.id, name: `${emp.firstName} ${emp.lastName || ''}`, status: 'credited', days: daysToCredit });
+      }
+
+      res.json({ message: `CL/SL credit completed for H${half} ${year}`, credited, total: activeEmployees.length, results });
+    } catch (err: any) {
+      console.error("CL/SL credit error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Year-end leave lapse & carry forward
+  app.post("/api/admin/leave-year-end-process", async (req, res) => {
+    try {
+      const user = req.user as any;
+      const userEmail = user?.email || user?.claims?.email;
+      if (!userEmail) return res.status(401).json({ error: "Unauthorized" });
+      const currentEmp = await storage.getEmployeeByEmail(userEmail);
+      const roles = (currentEmp?.accessRole || '').split(',').map((r: string) => r.trim());
+      if (!roles.includes('admin') && !roles.includes('hr') && !roles.includes('hr_manager')) {
+        return res.status(403).json({ error: "Admin/HR access required" });
+      }
+
+      const fromYear = req.body.year || new Date().getFullYear();
+      const toYear = fromYear + 1;
+      const allTypes = await storage.getLeaveTypes();
+      const elType = allTypes.find(t => t.code === 'EL');
+      const lapseTypes = allTypes.filter(t => ['CL', 'SL', 'BL', 'CO'].includes(t.code || ''));
+
+      const employees = await storage.getEmployees();
+      const activeEmployees = employees.filter((e: any) => e.status === 'active');
+      const results: any[] = [];
+
+      for (const emp of activeEmployees) {
+        const balances = await storage.getLeaveBalances(emp.id);
+        const empResults: any = { employeeId: emp.id, name: `${emp.firstName} ${emp.lastName || ''}`, actions: [] };
+
+        if (elType) {
+          const elBal = balances.find(b => b.leaveTypeId === elType.id && b.year === fromYear);
+          if (elBal) {
+            const currentBalance = parseFloat(elBal.balance || "0");
+            const carryForward = Math.min(currentBalance, 30);
+            const lapsed = Math.max(currentBalance - 30, 0);
+
+            if (carryForward > 0) {
+              const nextYearBal = balances.find(b => b.leaveTypeId === elType.id && b.year === toYear);
+              if (nextYearBal) {
+                const newOpening = parseFloat(nextYearBal.opening || "0") + carryForward;
+                const newBalance = parseFloat(nextYearBal.balance || "0") + carryForward;
+                await storage.updateLeaveBalanceFields(nextYearBal.id, { opening: newOpening.toString(), balance: newBalance.toString() });
+              } else {
+                await storage.createLeaveBalance({
+                  employeeId: emp.id, leaveTypeId: elType.id, year: toYear,
+                  opening: carryForward.toString(), accrued: "0", used: "0", balance: carryForward.toString(),
+                });
+              }
+            }
+            empResults.actions.push({ type: 'EL', carryForward, lapsed });
+          }
+        }
+
+        for (const lt of lapseTypes) {
+          const bal = balances.find(b => b.leaveTypeId === lt.id && b.year === fromYear);
+          if (bal) {
+            const lapsedAmount = parseFloat(bal.balance || "0");
+            empResults.actions.push({ type: lt.code, lapsed: lapsedAmount, carryForward: 0 });
+          }
+        }
+
+        if (empResults.actions.length > 0) results.push(empResults);
+      }
+
+      res.json({ message: `Year-end leave process completed for ${fromYear} → ${toYear}`, processed: results.length, results });
+    } catch (err: any) {
+      console.error("Year-end leave process error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // On Duty (OD) Requests - Two-level approval
   app.get("/api/on-duty-requests", async (req, res) => {
     try {
@@ -1891,6 +2396,19 @@ export async function registerRoutes(
 
       const { date, reason, location, odType, fromTime, toTime } = req.body;
       if (!date || !reason) return res.status(400).json({ message: "Date and reason are required" });
+
+      const empDept = (currentEmployee.department || '').toLowerCase();
+      const isSalesMarketing = empDept.includes('sales') || empDept.includes('marketing');
+
+      if (!isSalesMarketing) {
+        const todayStr = format(new Date(), 'yyyy-MM-dd');
+        const todayAttendance = await storage.getAttendanceByDate(currentEmployee.id, todayStr);
+        if (!todayAttendance || !todayAttendance.checkIn) {
+          return res.status(400).json({
+            message: "On-Duty request requires a biometric/office check-in punch first. Please punch in at the office before raising an OD request. (Sales & Marketing teams are exempt from this requirement.)"
+          });
+        }
+      }
 
       const created = await storage.createOnDutyRequest({
         employeeId: currentEmployee.id,
@@ -2217,9 +2735,9 @@ export async function registerRoutes(
       expiryDate.setDate(expiryDate.getDate() + 60);
 
       const hoursWorked = parseFloat(hours || "8");
-      const daysEarned = hoursWorked >= 6 ? "1" : (hoursWorked >= 4.5 ? "0.5" : "0");
+      const daysEarned = hoursWorked >= 8.5 ? "1" : (hoursWorked >= 4.5 ? "0.5" : "0");
       if (daysEarned === "0") {
-        return res.status(400).json({ error: "Minimum 4.5 hours of work required to earn comp-off" });
+        return res.status(400).json({ error: "Minimum 4.5 hours of work required to earn comp-off (8.5 hours for full day)" });
       }
 
       const detectedType = isHoliday ? "holiday" : "weekend";
@@ -3295,12 +3813,28 @@ export async function registerRoutes(
   // Projects
   app.get("/api/projects", async (req, res) => {
     const projects = await storage.getProjects();
+    const entityIdParam = req.query.entityId ? String(req.query.entityId) : null;
+    if (entityIdParam) {
+      const entityIds = entityIdParam.split(',').map(Number).filter(n => !isNaN(n));
+      if (entityIds.length > 0) {
+        res.json(projects.filter(p => p.entityId && entityIds.includes(p.entityId)));
+        return;
+      }
+    }
     res.json(projects);
   });
 
   app.get("/api/projects/analytics", async (req, res) => {
-    const projects = await storage.getProjects();
-    const employees = await storage.getEmployees();
+    let projects = await storage.getProjects();
+    let employees = await storage.getEmployees();
+    const entityIdParam = req.query.entityId ? String(req.query.entityId) : null;
+    if (entityIdParam) {
+      const entityIds = entityIdParam.split(',').map(Number).filter(n => !isNaN(n));
+      if (entityIds.length > 0) {
+        projects = projects.filter(p => p.entityId && entityIds.includes(p.entityId));
+        employees = employees.filter(e => e.entityId && entityIds.includes(e.entityId));
+      }
+    }
     
     const analytics = projects.map(project => {
       const projectEmployees = employees.filter(e => e.projectId === project.id);
@@ -4361,9 +4895,19 @@ Authorised Signatory
       if (!record) {
         return res.status(404).json({ error: "Payroll record not found" });
       }
+
+      let entityDisplayName = "FC TECNRGY PVT LTD (FCT)";
+      if (employee.entityId) {
+        const empEntity = await storage.getEntity(employee.entityId);
+        if (empEntity) {
+          entityDisplayName = empEntity.payslipHeader || empEntity.legalName || empEntity.name;
+        }
+      }
+
       const earnings = record.earnings as any;
       const deductions = record.deductions as any;
-      let payslipHtml = `<table style="width:100%;border-collapse:collapse;margin:15px 0;font-size:14px;">`;
+      let payslipHtml = `<div style="text-align:center;font-weight:bold;font-size:16px;margin-bottom:10px;">${entityDisplayName}</div>`;
+      payslipHtml += `<table style="width:100%;border-collapse:collapse;margin:15px 0;font-size:14px;">`;
       payslipHtml += `<tr style="background:#f3f4f6;"><th style="padding:8px;text-align:left;border:1px solid #e5e7eb;">Earnings</th><th style="padding:8px;text-align:right;border:1px solid #e5e7eb;">Amount (₹)</th></tr>`;
       if (earnings && typeof earnings === "object") {
         for (const [key, val] of Object.entries(earnings)) {
@@ -6351,13 +6895,21 @@ Authorised Signatory
               const checkInHour = punchTime.getHours();
               const checkInMin = punchTime.getMinutes();
               const totalMinutes = checkInHour * 60 + checkInMin;
-              const shiftStart = 9 * 60 + 30;
-              const lateThreshold = 10 * 60;
+              let cdataShiftStart = 9 * 60 + 30;
+              let cdataLateThreshold = 10 * 60;
+              if (employee.shiftId) {
+                const empShift = await storage.getShift(employee.shiftId);
+                if (empShift?.startTime) {
+                  const [ssh, ssm] = empShift.startTime.split(':').map(Number);
+                  cdataShiftStart = ssh * 60 + ssm;
+                  cdataLateThreshold = cdataShiftStart + 30;
+                }
+              }
 
               let status = 'present';
-              if (totalMinutes > lateThreshold) {
+              if (totalMinutes > cdataLateThreshold) {
                 status = 'half_day';
-              } else if (totalMinutes > shiftStart) {
+              } else if (totalMinutes > cdataShiftStart) {
                 let cycleStart: Date, cycleEnd: Date;
                 if (punchTime.getDate() >= 26) {
                   cycleStart = new Date(punchTime.getFullYear(), punchTime.getMonth(), 26);
@@ -6521,17 +7073,24 @@ Authorised Signatory
       let action: string;
 
       if (!existing) {
-        // First punch of the day → check-in
         const checkInHour = punchTime.getHours();
         const checkInMin = punchTime.getMinutes();
         const totalMinutes = checkInHour * 60 + checkInMin;
-        const shiftStart = 9 * 60 + 30;
-        const lateThreshold = 10 * 60;
+        let bioCiShiftStart = 9 * 60 + 30;
+        let bioCiLateThreshold = 10 * 60;
+        if (employee.shiftId) {
+          const empShift = await storage.getShift(employee.shiftId);
+          if (empShift?.startTime) {
+            const [ssh, ssm] = empShift.startTime.split(':').map(Number);
+            bioCiShiftStart = ssh * 60 + ssm;
+            bioCiLateThreshold = bioCiShiftStart + 30;
+          }
+        }
 
         let status = 'present';
-        if (totalMinutes > lateThreshold) {
+        if (totalMinutes > bioCiLateThreshold) {
           status = 'half_day';
-        } else if (totalMinutes > shiftStart) {
+        } else if (totalMinutes > bioCiShiftStart) {
           let cycleStart: Date, cycleEnd: Date;
           if (punchTime.getDate() >= 26) {
             cycleStart = new Date(punchTime.getFullYear(), punchTime.getMonth(), 26);
@@ -6570,14 +7129,22 @@ Authorised Signatory
 
         const checkOutHour = punchTime.getHours();
         const checkOutMin = punchTime.getMinutes();
-        const totalMinutes = checkOutHour * 60 + checkOutMin;
-        const shiftEnd = 18 * 60 + 30;
-        const earlyThreshold = 18 * 60;
+        const bioCoTotalMin = checkOutHour * 60 + checkOutMin;
+        let bioShiftEnd = 18 * 60 + 30;
+        let bioEarlyThreshold = 18 * 60;
+        if (employee.shiftId) {
+          const empShift = await storage.getShift(employee.shiftId);
+          if (empShift?.endTime) {
+            const [seh, sem] = empShift.endTime.split(':').map(Number);
+            bioShiftEnd = seh * 60 + sem;
+            bioEarlyThreshold = bioShiftEnd - 30;
+          }
+        }
 
         let status = existing.status || 'present';
-        if (totalMinutes < earlyThreshold && !['half_day', 'late_deducted'].includes(status)) {
+        if (bioCoTotalMin < bioEarlyThreshold && !['half_day', 'late_deducted'].includes(status)) {
           status = 'half_day';
-        } else if (totalMinutes < shiftEnd && totalMinutes >= earlyThreshold && (status === 'present' || status === 'late')) {
+        } else if (bioCoTotalMin < bioShiftEnd && bioCoTotalMin >= bioEarlyThreshold && (status === 'present' || status === 'late')) {
           let cycleStart: Date, cycleEnd: Date;
           if (punchTime.getDate() >= 26) {
             cycleStart = new Date(punchTime.getFullYear(), punchTime.getMonth(), 26);
@@ -6588,8 +7155,7 @@ Authorised Signatory
           }
           const cycleLogs = await storage.getAttendanceByDateRange(format(cycleStart, 'yyyy-MM-dd'), format(cycleEnd, 'yyyy-MM-dd'), employee.id);
           const cycleEarlyCount = cycleLogs.filter((l: any) => l.date !== today && (l.status === 'early_departure' || l.status === 'early_deducted')).length;
-          const cycleLateCount = cycleLogs.filter((l: any) => l.status === 'late' || l.status === 'late_deducted').length;
-          status = (cycleLateCount + cycleEarlyCount) >= 3 ? 'early_deducted' : 'early_departure';
+          status = cycleEarlyCount >= 3 ? 'early_deducted' : 'early_departure';
         }
 
         if (parseFloat(workHours) < 4.5) {
@@ -6711,13 +7277,21 @@ Authorised Signatory
         const checkInHour = punchTime.getHours();
         const checkInMin = punchTime.getMinutes();
         const totalMinutes = checkInHour * 60 + checkInMin;
-        const shiftStart = 9 * 60 + 30;
-        const lateThreshold = 10 * 60;
+        let simCiShiftStart = 9 * 60 + 30;
+        let simCiLateThreshold = 10 * 60;
+        if (employee.shiftId) {
+          const empShift = await storage.getShift(employee.shiftId);
+          if (empShift?.startTime) {
+            const [ssh, ssm] = empShift.startTime.split(':').map(Number);
+            simCiShiftStart = ssh * 60 + ssm;
+            simCiLateThreshold = simCiShiftStart + 30;
+          }
+        }
 
         let status = 'present';
-        if (totalMinutes > lateThreshold) {
+        if (totalMinutes > simCiLateThreshold) {
           status = 'half_day';
-        } else if (totalMinutes > shiftStart) {
+        } else if (totalMinutes > simCiShiftStart) {
           let cycleStart: Date, cycleEnd: Date;
           if (punchTime.getDate() >= 26) {
             cycleStart = new Date(punchTime.getFullYear(), punchTime.getMonth(), 26);
@@ -6755,14 +7329,22 @@ Authorised Signatory
 
         const checkOutHour = punchTime.getHours();
         const checkOutMin = punchTime.getMinutes();
-        const totalMinutes = checkOutHour * 60 + checkOutMin;
-        const shiftEnd = 18 * 60 + 30;
-        const earlyThreshold = 18 * 60;
+        const simCoTotalMin = checkOutHour * 60 + checkOutMin;
+        let simShiftEnd = 18 * 60 + 30;
+        let simEarlyThreshold = 18 * 60;
+        if (employee.shiftId) {
+          const empShift = await storage.getShift(employee.shiftId);
+          if (empShift?.endTime) {
+            const [seh, sem] = empShift.endTime.split(':').map(Number);
+            simShiftEnd = seh * 60 + sem;
+            simEarlyThreshold = simShiftEnd - 30;
+          }
+        }
 
         let status = existing.status || 'present';
-        if (totalMinutes < earlyThreshold && !['half_day', 'late_deducted'].includes(status)) {
+        if (simCoTotalMin < simEarlyThreshold && !['half_day', 'late_deducted'].includes(status)) {
           status = 'half_day';
-        } else if (totalMinutes < shiftEnd && totalMinutes >= earlyThreshold && (status === 'present' || status === 'late')) {
+        } else if (simCoTotalMin < simShiftEnd && simCoTotalMin >= simEarlyThreshold && (status === 'present' || status === 'late')) {
           let cycleStart: Date, cycleEnd: Date;
           if (punchTime.getDate() >= 26) {
             cycleStart = new Date(punchTime.getFullYear(), punchTime.getMonth(), 26);
@@ -6773,8 +7355,7 @@ Authorised Signatory
           }
           const cycleLogs = await storage.getAttendanceByDateRange(format(cycleStart, 'yyyy-MM-dd'), format(cycleEnd, 'yyyy-MM-dd'), employee.id);
           const cycleEarlyCount = cycleLogs.filter((l: any) => l.date !== today && (l.status === 'early_departure' || l.status === 'early_deducted')).length;
-          const cycleLateCount = cycleLogs.filter((l: any) => l.status === 'late' || l.status === 'late_deducted').length;
-          status = (cycleLateCount + cycleEarlyCount) >= 3 ? 'early_deducted' : 'early_departure';
+          status = cycleEarlyCount >= 3 ? 'early_deducted' : 'early_departure';
         }
 
         if (parseFloat(workHours) < 4.5) {
@@ -7140,8 +7721,11 @@ Authorised Signatory
     console.log("GL mappings seed skipped:", err);
   }
 
-  // Seed database with comprehensive data
-  await seedDatabase();
+  try {
+    await seedDatabase();
+  } catch (err) {
+    console.log("Seed skipped:", (err as Error).message);
+  }
 
   return httpServer;
 }
@@ -7158,9 +7742,9 @@ async function seedDatabase() {
   const admin = await storage.createDepartment({ name: "Administration", description: "Office Management" });
 
   // Create leave types
-  await storage.createLeaveType({ name: "Casual Leave", code: "CL", annualAllowance: 12, carryForward: false, isPaid: true });
-  await storage.createLeaveType({ name: "Sick Leave", code: "SL", annualAllowance: 12, carryForward: true, maxCarryForward: 6, isPaid: true });
-  await storage.createLeaveType({ name: "Earned Leave", code: "EL", annualAllowance: 15, carryForward: true, maxCarryForward: 30, isPaid: true });
+  await storage.createLeaveType({ name: "Casual Leave", code: "CL", annualAllowance: 7, carryForward: false, isPaid: true });
+  await storage.createLeaveType({ name: "Sick Leave", code: "SL", annualAllowance: 7, carryForward: false, isPaid: true });
+  await storage.createLeaveType({ name: "Earned Leave", code: "EL", annualAllowance: 18, carryForward: true, maxCarryForward: 30, isPaid: true });
   await storage.createLeaveType({ name: "Maternity Leave", code: "ML", annualAllowance: 180, carryForward: false, isPaid: true });
   await storage.createLeaveType({ name: "Paternity Leave", code: "PL", annualAllowance: 15, carryForward: false, isPaid: true });
   await storage.createLeaveType({ name: "Loss of Pay", code: "LOP", annualAllowance: 365, carryForward: false, isPaid: false });

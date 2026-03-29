@@ -780,6 +780,12 @@ app.use((req, res, next) => {
         ALTER TABLE policy_acknowledgments ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMP;
       EXCEPTION WHEN OTHERS THEN NULL;
       END $$;
+      DO $$ BEGIN
+        ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS half_day_period TEXT;
+        ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
+        ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_by INTEGER;
+      EXCEPTION WHEN OTHERS THEN NULL;
+      END $$;
       CREATE TABLE IF NOT EXISTS shifts (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
@@ -894,6 +900,10 @@ app.use((req, res, next) => {
       END $$;
       DO $$ BEGIN
         ALTER TABLE employees ADD COLUMN IF NOT EXISTS biometric_device_id TEXT;
+      EXCEPTION WHEN OTHERS THEN NULL;
+      END $$;
+      DO $$ BEGIN
+        ALTER TABLE employees ADD COLUMN IF NOT EXISTS remote_login_authorized BOOLEAN DEFAULT false;
       EXCEPTION WHEN OTHERS THEN NULL;
       END $$;
       DO $$ BEGIN

@@ -24,40 +24,40 @@ import type { Employee, LeaveRequest, Holiday, LeaveType, LeaveBalance } from "@
 const LEAVE_POLICY = [
   {
     code: "EL", name: "Earned Leave", entitlement: 18, icon: Gift,
-    credited: "End of Quarter", halfDay: true, probation: false,
+    credited: "End of Quarter (4.5 days/quarter)", halfDay: true, probation: false,
     onJoining: "Pro-rata basis", maxAtOnce: "As per availability",
-    carryForward: "Max 30 days, rest lapsed", encashment: "Yes, on exit",
-    clubbing: "No", sandwich: "No", noticePeriod: "No",
+    carryForward: "Max 30 days, rest lapsed", encashment: "Yes, on separation only",
+    clubbing: "Yes, with SL, BL, PL, ML, CO & LWP", sandwich: "No", noticePeriod: "No",
     color: "bg-green-500", bgColor: "bg-green-50", textColor: "text-green-700"
   },
   {
     code: "CL", name: "Casual Leave", entitlement: 7, icon: Calendar,
-    credited: "Bi-Annually (Jan & Jul)", halfDay: true, probation: true,
-    onJoining: "Pro-rata basis", maxAtOnce: "Max 02 days",
-    carryForward: "No", encashment: "No",
-    clubbing: "No", sandwich: "No", noticePeriod: "No",
+    credited: "Bi-Annually (3.5 days on 1st Jan & 1st Jul)", halfDay: true, probation: true,
+    onJoining: "Pro-rata basis", maxAtOnce: "Max 02 days (excess converts to EL)",
+    carryForward: "No (lapses at year-end & on exit)", encashment: "No",
+    clubbing: "Only with CO & LWP", sandwich: "No", noticePeriod: "No",
     color: "bg-blue-500", bgColor: "bg-blue-50", textColor: "text-blue-700"
   },
   {
     code: "SL", name: "Sick Leave", entitlement: 7, icon: AlertTriangle,
-    credited: "Bi-Annually (Jan & Jul)", halfDay: true, probation: true,
+    credited: "Bi-Annually (3.5 days on 1st Jan & 1st Jul)", halfDay: true, probation: true,
     onJoining: "Pro-rata basis", maxAtOnce: "As per availability",
-    carryForward: "No", encashment: "No",
-    clubbing: "No", sandwich: "No", noticePeriod: "No",
+    carryForward: "No (lapses at year-end)", encashment: "No",
+    clubbing: "No", sandwich: "No", noticePeriod: "VP approval required",
     color: "bg-red-500", bgColor: "bg-red-50", textColor: "text-red-700"
   },
   {
     code: "BL", name: "Bereavement Leave", entitlement: 2, icon: Heart,
     credited: "Per Occurrence", halfDay: true, probation: true,
     onJoining: "-", maxAtOnce: "-",
-    carryForward: "No", encashment: "No",
-    clubbing: "Yes, with EL", sandwich: "No", noticePeriod: "No",
+    carryForward: "No (lapses at year-end)", encashment: "No",
+    clubbing: "Yes, with EL", sandwich: "No", noticePeriod: "VP approval required",
     color: "bg-slate-500", bgColor: "bg-slate-50", textColor: "text-slate-700"
   },
   {
     code: "PL", name: "Paternity Leave", entitlement: 4, icon: Baby,
     credited: "Per Occurrence", halfDay: false, probation: false,
-    onJoining: "-", maxAtOnce: "4 days",
+    onJoining: "-", maxAtOnce: "4 days (single stretch, within 30 days of childbirth)",
     carryForward: "No", encashment: "No",
     clubbing: "No", sandwich: "No", noticePeriod: "No",
     color: "bg-purple-500", bgColor: "bg-purple-50", textColor: "text-purple-700",
@@ -74,10 +74,10 @@ const LEAVE_POLICY = [
   },
   {
     code: "CO", name: "Comp Off", entitlement: null, icon: Award,
-    credited: "AM & above", halfDay: true, probation: true,
+    credited: "On approval of weekend/holiday work", halfDay: true, probation: true,
     onJoining: "-", maxAtOnce: "As per availability",
-    carryForward: "Yes", encashment: "No",
-    clubbing: "No", sandwich: "No", noticePeriod: "No",
+    carryForward: "Lapses after 60 days", encashment: "No",
+    clubbing: "Only with CL & LWP", sandwich: "No", noticePeriod: "No",
     color: "bg-orange-500", bgColor: "bg-orange-50", textColor: "text-orange-700"
   },
 ];
@@ -114,6 +114,7 @@ export default function Leaves() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [reason, setReason] = useState("");
+  const [medicalCertificateUrl, setMedicalCertificateUrl] = useState("");
   const [isHalfDay, setIsHalfDay] = useState(false);
   const [halfDayPeriod, setHalfDayPeriod] = useState("first_half");
   const [rejectRemarks, setRejectRemarks] = useState("");
@@ -159,6 +160,12 @@ export default function Leaves() {
     queryKey: [`/api/leave-balances?employeeId=${currentEmployee?.id}`],
     enabled: !!currentEmployee?.id,
   });
+
+  const { data: exitRecords } = useQuery<any[]>({
+    queryKey: [`/api/exit-records?employeeId=${currentEmployee?.id}`],
+    enabled: !!currentEmployee?.id,
+  });
+  const isOnNoticePeriod = exitRecords?.some((er: any) => er.clearanceStatus !== 'completed');
 
   const { data: myCompOffRequests } = useQuery<any[]>({
     queryKey: ["/api/my-comp-off-requests"],
@@ -303,6 +310,9 @@ export default function Leaves() {
     if (!opt.gender) {
       if (isProbation && ['earned', 'paternity', 'bereavement'].includes(opt.value)) return false;
       if (opt.value === 'earned' && daysSinceJoining < 180) return false;
+      if (opt.value === 'earned' && isOnNoticePeriod) return false;
+      if (opt.value === 'casual' && isOnNoticePeriod) return false;
+      if (opt.value === 'comp_off' && isOnNoticePeriod) return false;
       return true;
     }
     if (isAdmin) return true;
@@ -333,6 +343,8 @@ export default function Leaves() {
         endDate,
         reason: reason || "",
         days: isHalfDay ? "0.5" : undefined,
+        halfDayPeriod: isHalfDay ? halfDayPeriod : undefined,
+        medicalCertificateUrl: leaveType === 'sick' ? medicalCertificateUrl : undefined,
       });
       return res;
     },
@@ -344,6 +356,7 @@ export default function Leaves() {
       setStartDate("");
       setEndDate("");
       setReason("");
+      setMedicalCertificateUrl("");
       setIsHalfDay(false);
       toast({ title: "Leave request submitted successfully" });
     },
@@ -363,6 +376,20 @@ export default function Leaves() {
     },
     onError: (err: any) => {
       toast({ title: "Failed to update status", description: err.message, variant: "destructive" });
+    }
+  });
+
+  const cancelLeaveMutation = useMutation({
+    mutationFn: async (leaveId: number) => {
+      return apiRequest("PATCH", `/api/leaves/${leaveId}/cancel`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leaves"] });
+      queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as string)?.startsWith('/api/leave-balances') });
+      toast({ title: "Leave request cancelled successfully" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Failed to cancel leave", description: err.message, variant: "destructive" });
     }
   });
 
@@ -629,12 +656,12 @@ export default function Leaves() {
                 <label htmlFor="halfDay" className="text-sm font-medium">Half Day</label>
                 {isHalfDay && (
                   <Select value={halfDayPeriod} onValueChange={setHalfDayPeriod}>
-                    <SelectTrigger className="w-40" data-testid="select-half-day-period">
+                    <SelectTrigger className="w-64" data-testid="select-half-day-period">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="first_half">First Half</SelectItem>
-                      <SelectItem value="second_half">Second Half</SelectItem>
+                      <SelectItem value="first_half">First Half (09:30 AM – 02:00 PM)</SelectItem>
+                      <SelectItem value="second_half">Second Half (02:00 PM – 06:30 PM)</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -654,9 +681,22 @@ export default function Leaves() {
                 <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Enter reason..." data-testid="input-reason" />
               </div>
               {leaveType === "sick" && (
-                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-sm text-amber-800">
-                  <AlertTriangle className="w-4 h-4 inline mr-1" />
-                  Medical certificate required for SL (MBBS/MD from registered hospital/clinic with proper sign and seal)
+                <div className="space-y-3">
+                  <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-sm text-amber-800">
+                    <AlertTriangle className="w-4 h-4 inline mr-1" />
+                    Medical certificate required for SL of 2+ days (MBBS/MD from registered hospital/clinic with proper sign and seal)
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Medical Certificate URL / Reference {!isHalfDay && startDate && endDate && (() => { const s = new Date(startDate); const e = new Date(endDate); const d = Math.ceil((e.getTime()-s.getTime())/(1000*60*60*24))+1; return d >= 2 ? <span className="text-red-500">*</span> : null; })()}</label>
+                    <Input
+                      type="text"
+                      value={medicalCertificateUrl}
+                      onChange={(e) => setMedicalCertificateUrl(e.target.value)}
+                      placeholder="Paste document link or reference number"
+                      data-testid="input-medical-certificate"
+                    />
+                    <p className="text-xs text-muted-foreground">Required for 2+ consecutive days of Sick Leave</p>
+                  </div>
                 </div>
               )}
               {leaveType === "bereavement" && (
@@ -692,6 +732,11 @@ export default function Leaves() {
           <TabsTrigger value="compoff" data-testid="tab-compoff">
             Comp-Off{pendingCompOffs.length > 0 ? ` (${pendingCompOffs.length})` : ''}
           </TabsTrigger>
+          {isAdmin && (
+            <TabsTrigger value="automation" data-testid="tab-automation">
+              Leave Automation
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="leaves">
@@ -726,6 +771,7 @@ export default function Leaves() {
                           <th className="pb-3 font-medium">Reason</th>
                           <th className="pb-3 font-medium">Status</th>
                           <th className="pb-3 font-medium">Applied On</th>
+                          {viewMode === "self" && <th className="pb-3 font-medium">Actions</th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -760,6 +806,27 @@ export default function Leaves() {
                               <td className="py-3 text-xs text-slate-500">
                                 {leave.createdAt ? format(new Date(leave.createdAt), 'dd MMM yyyy') : '-'}
                               </td>
+                              {viewMode === "self" && (
+                                <td className="py-3">
+                                  {(leave.status === 'pending' || leave.status === 'approved') && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-red-600 border-red-200 hover:bg-red-50"
+                                      onClick={() => {
+                                        if (confirm(`Are you sure you want to cancel this ${leave.leaveType} leave request from ${leave.startDate} to ${leave.endDate}?`)) {
+                                          cancelLeaveMutation.mutate(leave.id);
+                                        }
+                                      }}
+                                      disabled={cancelLeaveMutation.isPending}
+                                      data-testid={`button-cancel-leave-${leave.id}`}
+                                    >
+                                      <XCircle className="w-3 h-3 mr-1" />
+                                      Cancel
+                                    </Button>
+                                  )}
+                                </td>
+                              )}
                             </tr>
                           );
                         })}
@@ -1181,6 +1248,225 @@ export default function Leaves() {
             )}
           </div>
         </TabsContent>
+
+        {isAdmin && (
+          <TabsContent value="automation">
+            <div className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Leave Credit & Year-End Automation</CardTitle>
+                  <p className="text-sm text-muted-foreground">Run leave credit cycles and year-end carry forward/lapse processing</p>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <Card className="border-2 border-green-200">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">EL Quarterly Credit</CardTitle>
+                        <p className="text-xs text-muted-foreground">Credits 4.5 days per quarter (pro-rata for new joiners, 180-day eligibility check)</p>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">Quarter:</span>
+                          <select
+                            data-testid="select-el-quarter"
+                            className="border rounded px-2 py-1 text-sm"
+                            id="el-quarter"
+                            defaultValue={Math.ceil((new Date().getMonth() + 1) / 3)}
+                          >
+                            <option value={1}>Q1 (Jan-Mar)</option>
+                            <option value={2}>Q2 (Apr-Jun)</option>
+                            <option value={3}>Q3 (Jul-Sep)</option>
+                            <option value={4}>Q4 (Oct-Dec)</option>
+                          </select>
+                        </div>
+                        <Button
+                          data-testid="btn-credit-el"
+                          className="w-full"
+                          onClick={async () => {
+                            const q = (document.getElementById('el-quarter') as HTMLSelectElement)?.value;
+                            if (!confirm(`Are you sure you want to credit EL for Q${q}? This will add 4.5 days (pro-rata) to all eligible employees.`)) return;
+                            try {
+                              const res = await apiRequest('POST', '/api/admin/leave-credit-el-quarterly', { quarter: parseInt(q) });
+                              const data = await res.json();
+                              alert(`${data.message}\n\nCredited: ${data.credited} employees`);
+                              queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as string)?.includes('leave-balance') });
+                            } catch (err: any) { alert('Error: ' + (err.message || err)); }
+                          }}
+                        >
+                          Run EL Credit
+                        </Button>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="border-2 border-blue-200">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">CL/SL Bi-Annual Credit</CardTitle>
+                        <p className="text-xs text-muted-foreground">Credits 3.5 days CL + 3.5 days SL per half-year (pro-rata for new joiners)</p>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">Half:</span>
+                          <select
+                            data-testid="select-cl-sl-half"
+                            className="border rounded px-2 py-1 text-sm"
+                            id="cl-sl-half"
+                            defaultValue={new Date().getMonth() < 6 ? 1 : 2}
+                          >
+                            <option value={1}>H1 (Jan 1)</option>
+                            <option value={2}>H2 (Jul 1)</option>
+                          </select>
+                        </div>
+                        <Button
+                          data-testid="btn-credit-cl-sl"
+                          className="w-full"
+                          variant="outline"
+                          onClick={async () => {
+                            const h = (document.getElementById('cl-sl-half') as HTMLSelectElement)?.value;
+                            if (!confirm(`Are you sure you want to credit CL & SL for H${h}? This will add 3.5 days each (pro-rata) to all active employees.`)) return;
+                            try {
+                              const res = await apiRequest('POST', '/api/admin/leave-credit-cl-sl', { half: parseInt(h) });
+                              const data = await res.json();
+                              alert(`${data.message}\n\nCredited: ${data.credited} employees`);
+                              queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as string)?.includes('leave-balance') });
+                            } catch (err: any) { alert('Error: ' + (err.message || err)); }
+                          }}
+                        >
+                          Run CL/SL Credit
+                        </Button>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="border-2 border-amber-200">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">Year-End Process</CardTitle>
+                        <p className="text-xs text-muted-foreground">EL: carry forward max 30 days (excess lapsed). CL, SL, BL, CO: reset to zero.</p>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">Year:</span>
+                          <select
+                            data-testid="select-year-end"
+                            className="border rounded px-2 py-1 text-sm"
+                            id="year-end-year"
+                            defaultValue={new Date().getFullYear()}
+                          >
+                            <option value={new Date().getFullYear() - 1}>{new Date().getFullYear() - 1}</option>
+                            <option value={new Date().getFullYear()}>{new Date().getFullYear()}</option>
+                          </select>
+                        </div>
+                        <Button
+                          data-testid="btn-year-end"
+                          className="w-full"
+                          variant="destructive"
+                          onClick={async () => {
+                            const y = (document.getElementById('year-end-year') as HTMLSelectElement)?.value;
+                            if (!confirm(`⚠️ Year-End Process for ${y}:\n\n• EL: Carry forward up to 30 days → ${parseInt(y)+1}\n• CL, SL, BL, CO: All balances LAPSE to zero\n\nThis action cannot be undone. Proceed?`)) return;
+                            try {
+                              const res = await apiRequest('POST', '/api/admin/leave-year-end-process', { year: parseInt(y) });
+                              const data = await res.json();
+                              alert(`${data.message}\n\nProcessed: ${data.processed} employees`);
+                              queryClient.invalidateQueries({ predicate: (query) => (query.queryKey[0] as string)?.includes('leave-balance') });
+                            } catch (err: any) { alert('Error: ' + (err.message || err)); }
+                          }}
+                        >
+                          Run Year-End Process
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Card className="border-2 border-red-200">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">Auto-LWP Processing</CardTitle>
+                        <p className="text-xs text-muted-foreground">Converts all unapproved absences (status &apos;Absent&apos;) to LWP for payroll deduction. Run after the 26th attendance lock.</p>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">Month:</span>
+                          <select data-testid="select-lwp-month" className="border rounded px-2 py-1 text-sm" id="lwp-month" defaultValue={new Date().getMonth() + 1}>
+                            {[...Array(12)].map((_, i) => (
+                              <option key={i+1} value={i+1}>{new Date(2026, i, 1).toLocaleString('default', { month: 'long' })}</option>
+                            ))}
+                          </select>
+                          <select data-testid="select-lwp-year" className="border rounded px-2 py-1 text-sm" id="lwp-year" defaultValue={new Date().getFullYear()}>
+                            <option value={new Date().getFullYear() - 1}>{new Date().getFullYear() - 1}</option>
+                            <option value={new Date().getFullYear()}>{new Date().getFullYear()}</option>
+                          </select>
+                        </div>
+                        <Button
+                          data-testid="btn-auto-lwp"
+                          className="w-full"
+                          variant="destructive"
+                          onClick={async () => {
+                            const m = (document.getElementById('lwp-month') as HTMLSelectElement)?.value;
+                            const y = (document.getElementById('lwp-year') as HTMLSelectElement)?.value;
+                            if (!confirm(`This will convert ALL unapproved absences in ${new Date(2026, parseInt(m)-1, 1).toLocaleString('default', { month: 'long' })} ${y} to LWP for payroll deduction.\n\nProceed?`)) return;
+                            try {
+                              const res = await apiRequest('POST', '/api/admin/auto-lwp-process', { month: parseInt(m), year: parseInt(y) });
+                              const data = await res.json();
+                              alert(`${data.message}\n\nConverted: ${data.converted} records`);
+                            } catch (err: any) { alert('Error: ' + (err.message || err)); }
+                          }}
+                        >
+                          Process Auto-LWP
+                        </Button>
+                      </CardContent>
+                    </Card>
+
+                    <Card className="border-2 border-gray-200">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">Attendance Lock Status</CardTitle>
+                        <p className="text-xs text-muted-foreground">Portal locks on the 26th of every month. Unmarked absences become LWP.</p>
+                      </CardHeader>
+                      <CardContent>
+                        {new Date().getDate() >= 26 ? (
+                          <div className="p-3 bg-red-50 border border-red-200 rounded text-sm">
+                            <p className="font-semibold text-red-700">Portal is LOCKED</p>
+                            <p className="text-red-600 mt-1">Attendance updates are locked for this cycle. Run Auto-LWP to convert remaining absences.</p>
+                          </div>
+                        ) : (
+                          <div className="p-3 bg-green-50 border border-green-200 rounded text-sm">
+                            <p className="font-semibold text-green-700">Portal is OPEN</p>
+                            <p className="text-green-600 mt-1">Employees can update attendance until the 25th. Lock date: {new Date().getFullYear()}-{String(new Date().getMonth() + 1).padStart(2, '0')}-26</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <Card className="bg-muted/50">
+                    <CardContent className="pt-4">
+                      <h4 className="font-semibold mb-2">Leave Credit Schedule Reference</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <p className="font-medium text-green-700">Earned Leave (EL) - 18 days/year</p>
+                          <ul className="list-disc list-inside text-muted-foreground space-y-1">
+                            <li>1 day per 20 days worked</li>
+                            <li>4.5 days credited at end of each quarter</li>
+                            <li>Eligible after 180 days of service</li>
+                            <li>Max 30 days carry forward; excess lapsed Dec 31</li>
+                            <li>Encashable only on separation</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="font-medium text-blue-700">CL & SL - 7 days each/year</p>
+                          <ul className="list-disc list-inside text-muted-foreground space-y-1">
+                            <li>3.5 days credited on Jan 1st</li>
+                            <li>3.5 days credited on Jul 1st</li>
+                            <li>Pro-rata for mid-year joiners</li>
+                            <li>No carry forward — lapses Dec 31</li>
+                            <li>No encashment</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+        )}
 
       </Tabs>
     </div>
