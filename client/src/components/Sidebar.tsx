@@ -139,6 +139,7 @@ export function Sidebar() {
     ...(hasHrAccess || isPayrollTeam ? [{ href: "/expenses", label: "Expenses", icon: Receipt }] : []),
     ...(hasHrAccess || isProjectTeam ? [{ href: "/projects", label: "Projects", icon: FolderKanban }] : []),
     ...(hasHrAccess || isPayrollTeam ? [{ href: "/advance-loans", label: "Loans", icon: Banknote }] : []),
+    ...(isAdmin ? [{ href: "/salary-adjustments", label: "Arrears & Adjustments", icon: FileCheck }] : []),
     ...(hasHrAccess || isPayrollTeam ? [{ href: "/statutory-compliance", label: "Statutory Compliance", icon: Scale }] : []),
   ];
 

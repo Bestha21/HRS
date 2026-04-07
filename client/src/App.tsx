@@ -56,6 +56,7 @@ const OrgStructure = lazy(() => import("@/pages/OrgStructure"));
 const AdvanceLoans = lazy(() => import("@/pages/AdvanceLoans"));
 const StatutoryCompliance = lazy(() => import("@/pages/StatutoryCompliance"));
 const EntityManagement = lazy(() => import("@/pages/EntityManagement"));
+const SalaryAdjustments = lazy(() => import("@/pages/SalaryAdjustments"));
 
 function PageLoader() {
   return (
@@ -253,6 +254,9 @@ function Router() {
       </Route>
       <Route path="/advance-loans">
         <ProtectedRoute component={AdvanceLoans} />
+      </Route>
+      <Route path="/salary-adjustments">
+        <ProtectedRoute component={SalaryAdjustments} />
       </Route>
       <Route path="/statutory-compliance">
         <ProtectedRoute component={StatutoryCompliance} />

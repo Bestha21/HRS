@@ -264,6 +264,45 @@ app.use((req, res, next) => {
         connection_url TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS salary_adjustments (
+        id SERIAL PRIMARY KEY,
+        employee_id INTEGER NOT NULL,
+        adjustment_type TEXT NOT NULL,
+        month TEXT NOT NULL,
+        year INTEGER NOT NULL,
+        amount NUMERIC NOT NULL,
+        lop_days_reversed NUMERIC DEFAULT 0,
+        leave_type_used TEXT,
+        leave_days_deducted NUMERIC DEFAULT 0,
+        reason TEXT NOT NULL,
+        supporting_info TEXT,
+        status TEXT DEFAULT 'pending',
+        requested_by INTEGER NOT NULL,
+        approved_by INTEGER,
+        approved_at TIMESTAMP,
+        approval_remarks TEXT,
+        processed_in_month TEXT,
+        processed_in_year INTEGER,
+        payroll_id INTEGER,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS hr_action_log (
+        id SERIAL PRIMARY KEY,
+        action TEXT NOT NULL,
+        module TEXT NOT NULL,
+        reference_id INTEGER,
+        reference_type TEXT,
+        employee_id INTEGER,
+        performed_by INTEGER NOT NULL,
+        performed_by_name TEXT,
+        details TEXT,
+        old_value TEXT,
+        new_value TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
     `);
 
     // Phase 2: Tables that depend on departments, leave_types, etc.
@@ -781,9 +820,12 @@ app.use((req, res, next) => {
       EXCEPTION WHEN OTHERS THEN NULL;
       END $$;
       DO $$ BEGIN
+        ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS medical_certificate_url TEXT;
         ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS half_day_period TEXT;
         ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP;
         ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS cancelled_by INTEGER;
+        ALTER TABLE salary_adjustments ADD COLUMN IF NOT EXISTS leave_type_used TEXT;
+        ALTER TABLE salary_adjustments ADD COLUMN IF NOT EXISTS leave_days_deducted NUMERIC DEFAULT 0;
       EXCEPTION WHEN OTHERS THEN NULL;
       END $$;
       CREATE TABLE IF NOT EXISTS shifts (

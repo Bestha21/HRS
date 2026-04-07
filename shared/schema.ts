@@ -1023,6 +1023,53 @@ export const insertErpIntegrationSchema = createInsertSchema(erpIntegrations).om
 export type InsertErpIntegration = z.infer<typeof insertErpIntegrationSchema>;
 export type ErpIntegration = typeof erpIntegrations.$inferSelect;
 
+export const salaryAdjustments = pgTable("salary_adjustments", {
+  id: serial("id").primaryKey(),
+  employeeId: integer("employee_id").notNull(),
+  adjustmentType: text("adjustment_type").notNull(),
+  month: text("month").notNull(),
+  year: integer("year").notNull(),
+  amount: decimal("amount").notNull(),
+  lopDaysReversed: decimal("lop_days_reversed").default("0"),
+  leaveTypeUsed: text("leave_type_used"),
+  leaveDaysDeducted: decimal("leave_days_deducted").default("0"),
+  reason: text("reason").notNull(),
+  supportingInfo: text("supporting_info"),
+  status: text("status").default("pending"),
+  requestedBy: integer("requested_by").notNull(),
+  approvedBy: integer("approved_by"),
+  approvedAt: timestamp("approved_at"),
+  approvalRemarks: text("approval_remarks"),
+  processedInMonth: text("processed_in_month"),
+  processedInYear: integer("processed_in_year"),
+  payrollId: integer("payroll_id"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertSalaryAdjustmentSchema = createInsertSchema(salaryAdjustments).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertSalaryAdjustment = z.infer<typeof insertSalaryAdjustmentSchema>;
+export type SalaryAdjustment = typeof salaryAdjustments.$inferSelect;
+
+export const hrActionLog = pgTable("hr_action_log", {
+  id: serial("id").primaryKey(),
+  action: text("action").notNull(),
+  module: text("module").notNull(),
+  referenceId: integer("reference_id"),
+  referenceType: text("reference_type"),
+  employeeId: integer("employee_id"),
+  performedBy: integer("performed_by").notNull(),
+  performedByName: text("performed_by_name"),
+  details: text("details"),
+  oldValue: text("old_value"),
+  newValue: text("new_value"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertHrActionLogSchema = createInsertSchema(hrActionLog).omit({ id: true, createdAt: true });
+export type InsertHrActionLog = z.infer<typeof insertHrActionLogSchema>;
+export type HrActionLog = typeof hrActionLog.$inferSelect;
+
 export type DashboardStats = {
   totalEmployees: number;
   activeEmployees: number;

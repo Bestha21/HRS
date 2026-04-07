@@ -1444,6 +1444,25 @@ export async function registerRoutes(
         return res.status(403).json({ message: "You can only regularize your own attendance" });
       }
 
+      const attDate = new Date(record.date + 'T00:00:00');
+      const now = new Date();
+      const dayOfMonth = now.getDate();
+      if (dayOfMonth >= 26) {
+        const lockCycleEnd = new Date(now.getFullYear(), now.getMonth(), 25);
+        if (attDate <= lockCycleEnd) {
+          return res.status(400).json({ 
+            message: "Attendance records for the previous cycle are locked after the 26th. Regularization is not allowed for dates in a locked cycle." 
+          });
+        }
+      } else {
+        const prevCycleEnd = new Date(now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear(), now.getMonth() === 0 ? 11 : now.getMonth() - 1, 25);
+        if (attDate <= prevCycleEnd) {
+          return res.status(400).json({ 
+            message: "Attendance records for the previous cycle are locked after the 26th. Regularization is not allowed for dates in a locked cycle." 
+          });
+        }
+      }
+
       const updated = await storage.updateAttendance(attendanceId, {
         regularizationStatus: 'pending',
         regularizationReason: reason,
@@ -1696,6 +1715,12 @@ export async function registerRoutes(
            WHERE lr.employee_id = a.employee_id
            AND lr.status = 'approved'
            AND a.date BETWEEN lr.start_date AND lr.end_date
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM on_duty_requests odr
+           WHERE odr.employee_id = a.employee_id
+           AND odr.status = 'approved'
+           AND odr.date = CAST(a.date AS TEXT)
          )`,
         [month, year]
       );
@@ -2396,19 +2421,6 @@ export async function registerRoutes(
 
       const { date, reason, location, odType, fromTime, toTime } = req.body;
       if (!date || !reason) return res.status(400).json({ message: "Date and reason are required" });
-
-      const empDept = (currentEmployee.department || '').toLowerCase();
-      const isSalesMarketing = empDept.includes('sales') || empDept.includes('marketing');
-
-      if (!isSalesMarketing) {
-        const todayStr = format(new Date(), 'yyyy-MM-dd');
-        const todayAttendance = await storage.getAttendanceByDate(currentEmployee.id, todayStr);
-        if (!todayAttendance || !todayAttendance.checkIn) {
-          return res.status(400).json({
-            message: "On-Duty request requires a biometric/office check-in punch first. Please punch in at the office before raising an OD request. (Sales & Marketing teams are exempt from this requirement.)"
-          });
-        }
-      }
 
       const created = await storage.createOnDutyRequest({
         employeeId: currentEmployee.id,
@@ -7489,6 +7501,259 @@ Authorised Signatory
     try {
       await pool.query("DELETE FROM erp_integrations WHERE id=$1", [req.params.id]);
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===== Salary Adjustments (Arrears/LOP Reversal) =====
+  app.get("/api/salary-adjustments", async (req, res) => {
+    try {
+      const { authorized } = await checkUserRole(req, ["admin"]);
+      if (!authorized) return res.status(403).json({ message: "Admin access required" });
+      const filters: any = {};
+      if (req.query.employeeId) filters.employeeId = Number(req.query.employeeId);
+      if (req.query.status) filters.status = String(req.query.status);
+      const adjustments = await storage.getSalaryAdjustments(filters);
+      res.json(adjustments);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/salary-adjustments/lop-info", async (req, res) => {
+    try {
+      const { authorized } = await checkUserRole(req, ["admin"]);
+      if (!authorized) return res.status(403).json({ message: "Admin access required" });
+
+      const employeeId = Number(req.query.employeeId);
+      const month = String(req.query.month || '').toLowerCase();
+      const year = Number(req.query.year);
+      if (!employeeId || !month || !year) return res.status(400).json({ message: "employeeId, month, year required" });
+
+      const payrollRecords = await storage.getPayroll(employeeId, month, year);
+      let lopDays = 0;
+      let lopAmount = 0;
+      let grossSalary = 0;
+      let perDaySalary = 0;
+
+      if (payrollRecords.length > 0) {
+        const pr = payrollRecords[0];
+        lopDays = Number(pr.lopDays || 0);
+        lopAmount = Number(pr.lopDeduction || 0);
+        grossSalary = Number(pr.grossSalary || 0);
+        const totalDays = Number(pr.totalWorkingDays || 30);
+        const basicPay = Number(pr.basicSalary || 0) + Number(pr.hra || 0) + Number(pr.specialAllowance || 0) + Number(pr.otherAllowances || 0);
+        perDaySalary = totalDays > 0 ? Math.round(basicPay / totalDays) : 0;
+      }
+
+      const leaveTypes = await storage.getLeaveTypes();
+      const lopType = leaveTypes.find(t => t.code === 'LOP');
+      let lopLeaveUsed = 0;
+      if (lopType) {
+        const balances = await storage.getLeaveBalances(employeeId);
+        const lopBal = balances.find(b => b.leaveTypeId === lopType.id && b.year === year);
+        if (lopBal) lopLeaveUsed = Number(lopBal.used || 0);
+      }
+
+      res.json({ lopDays, lopAmount, grossSalary, perDaySalary, lopLeaveUsed });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/salary-adjustments", async (req, res) => {
+    try {
+      const { authorized } = await checkUserRole(req, ["admin"]);
+      if (!authorized) return res.status(403).json({ message: "Admin access required" });
+      const user = req.user as any;
+      const currentEmp = await storage.getEmployeeByEmail(user?.email || user?.claims?.email);
+      if (!currentEmp) return res.status(403).json({ message: "Employee not found" });
+
+      const { employeeId, adjustmentType, month, year, amount, lopDaysReversed, leaveTypeUsed, leaveDaysDeducted, reason, supportingInfo } = req.body;
+      if (!employeeId || !adjustmentType || !month || !year || !amount || !reason) {
+        return res.status(400).json({ message: "employeeId, adjustmentType, month, year, amount, and reason are required" });
+      }
+
+      if (adjustmentType === "arrear_lop_reversal" && (!leaveTypeUsed || !leaveDaysDeducted)) {
+        return res.status(400).json({ message: "Leave type and days to deduct are required for LOP reversal" });
+      }
+
+      const adjustment = await storage.createSalaryAdjustment({
+        employeeId, adjustmentType, month, year: Number(year),
+        amount: String(amount), lopDaysReversed: lopDaysReversed ? String(lopDaysReversed) : "0",
+        leaveTypeUsed: leaveTypeUsed || null, leaveDaysDeducted: leaveDaysDeducted ? String(leaveDaysDeducted) : "0",
+        reason, supportingInfo: supportingInfo || null,
+        status: "pending", requestedBy: currentEmp.id,
+      });
+
+      const emp = await storage.getEmployee(employeeId);
+      await storage.createHrActionLog({
+        action: "Created salary adjustment request",
+        module: "salary_adjustments",
+        referenceId: adjustment.id,
+        referenceType: "salary_adjustment",
+        employeeId,
+        performedBy: currentEmp.id,
+        performedByName: `${currentEmp.firstName} ${currentEmp.lastName}`,
+        details: `${adjustmentType} of Rs.${amount} for ${month}/${year}. Employee: ${emp?.firstName} ${emp?.lastName}. Reason: ${reason}`,
+      });
+
+      res.status(201).json(adjustment);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/salary-adjustments/:id/approve", async (req, res) => {
+    try {
+      const { authorized } = await checkUserRole(req, ["admin"]);
+      if (!authorized) return res.status(403).json({ message: "Admin access required for approval" });
+      const user = req.user as any;
+      const currentEmp = await storage.getEmployeeByEmail(user?.email || user?.claims?.email);
+      if (!currentEmp) return res.status(403).json({ message: "Employee not found" });
+
+      const id = Number(req.params.id);
+      const { status, remarks } = req.body;
+      if (!["approved", "rejected"].includes(status)) {
+        return res.status(400).json({ message: "Status must be approved or rejected" });
+      }
+
+      const existing = await storage.getSalaryAdjustments();
+      const adj = existing.find(a => a.id === id);
+      if (!adj) return res.status(404).json({ message: "Adjustment not found" });
+      if (adj.status !== "pending") return res.status(400).json({ message: "Only pending adjustments can be approved/rejected" });
+
+      const updated = await storage.updateSalaryAdjustment(id, {
+        status,
+        approvedBy: currentEmp.id,
+        approvedAt: new Date(),
+        approvalRemarks: remarks || null,
+      });
+
+      const emp = await storage.getEmployee(adj.employeeId);
+      await storage.createHrActionLog({
+        action: `Salary adjustment ${status}`,
+        module: "salary_adjustments",
+        referenceId: id,
+        referenceType: "salary_adjustment",
+        employeeId: adj.employeeId,
+        performedBy: currentEmp.id,
+        performedByName: `${currentEmp.firstName} ${currentEmp.lastName}`,
+        details: `${status === 'approved' ? 'Approved' : 'Rejected'} ${adj.adjustmentType} of Rs.${adj.amount} for ${adj.month}/${adj.year}. Employee: ${emp?.firstName} ${emp?.lastName}. Remarks: ${remarks || 'None'}`,
+        oldValue: "pending",
+        newValue: status,
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/salary-adjustments/:id/process", async (req, res) => {
+    try {
+      const { authorized } = await checkUserRole(req, ["admin"]);
+      if (!authorized) return res.status(403).json({ message: "Admin access required" });
+      const user = req.user as any;
+      const currentEmp = await storage.getEmployeeByEmail(user?.email || user?.claims?.email);
+      if (!currentEmp) return res.status(403).json({ message: "Employee not found" });
+
+      const id = Number(req.params.id);
+      const { processedInMonth, processedInYear } = req.body;
+
+      const existing = await storage.getSalaryAdjustments();
+      const adj = existing.find(a => a.id === id);
+      if (!adj) return res.status(404).json({ message: "Adjustment not found" });
+      if (adj.status !== "approved") return res.status(400).json({ message: "Only approved adjustments can be processed" });
+
+      const monthStr = processedInMonth || adj.month;
+      const yearNum = processedInYear ? Number(processedInYear) : adj.year;
+      const allPayroll = await storage.getPayroll(adj.employeeId, monthStr.toLowerCase(), yearNum);
+      let payrollId: number | null = null;
+
+      if (allPayroll.length > 0) {
+        const payrollRecord = allPayroll[0];
+        const existingArrear = Number(payrollRecord.arrear || 0);
+        const newArrear = existingArrear + Number(adj.amount);
+        const existingGross = Number(payrollRecord.grossSalary || 0);
+        const existingNet = Number(payrollRecord.netSalary || 0);
+        const addAmount = Number(adj.amount);
+
+        await storage.updatePayrollRecord(payrollRecord.id, {
+          arrear: newArrear.toString(),
+          grossSalary: (existingGross + addAmount).toString(),
+          netSalary: (existingNet + addAmount).toString(),
+        });
+        payrollId = payrollRecord.id;
+      }
+
+      let leaveDeductionInfo = '';
+      if (adj.adjustmentType === 'arrear_lop_reversal' && adj.leaveTypeUsed && Number(adj.leaveDaysDeducted) > 0) {
+        const leaveTypes = await storage.getLeaveTypes();
+        const lt = leaveTypes.find(t => t.code === adj.leaveTypeUsed);
+        if (lt) {
+          const balances = await storage.getLeaveBalances(adj.employeeId);
+          const bal = balances.find(b => b.leaveTypeId === lt.id && b.year === yearNum);
+          if (bal) {
+            const newUsed = parseFloat(bal.used || "0") + Number(adj.leaveDaysDeducted);
+            await storage.updateLeaveBalanceUsed(bal.id, newUsed.toString(), "0");
+            leaveDeductionInfo = ` Leave deducted: ${adj.leaveDaysDeducted} days from ${lt.name} (${lt.code}).`;
+          }
+
+          const lopType = leaveTypes.find(t => t.code === 'LOP');
+          if (lopType) {
+            const lopBal = balances.find(b => b.leaveTypeId === lopType.id && b.year === yearNum);
+            if (lopBal) {
+              const lopUsed = parseFloat(lopBal.used || "0");
+              const daysToReverse = Number(adj.leaveDaysDeducted);
+              const newLopUsed = Math.max(0, lopUsed - daysToReverse);
+              await storage.updateLeaveBalanceUsed(lopBal.id, newLopUsed.toString(), "0");
+              leaveDeductionInfo += ` LOP balance reduced by ${daysToReverse} days.`;
+            }
+          }
+        }
+      }
+
+      const updated = await storage.updateSalaryAdjustment(id, {
+        status: "processed",
+        processedInMonth: monthStr,
+        processedInYear: yearNum,
+        payrollId,
+      });
+
+      const emp = await storage.getEmployee(adj.employeeId);
+      await storage.createHrActionLog({
+        action: "Salary adjustment processed & arrears added to payslip",
+        module: "salary_adjustments",
+        referenceId: id,
+        referenceType: "salary_adjustment",
+        employeeId: adj.employeeId,
+        performedBy: currentEmp.id,
+        performedByName: `${currentEmp.firstName} ${currentEmp.lastName}`,
+        details: `Processed ${adj.adjustmentType} of Rs.${adj.amount} for ${emp?.firstName} ${emp?.lastName}. ${payrollId ? `Added to payroll ID ${payrollId} (${monthStr}/${yearNum}) under arrears.` : `No existing payroll found for ${monthStr}/${yearNum} — arrears will be included when payroll is run.`}${leaveDeductionInfo}`,
+        oldValue: "approved",
+        newValue: "processed",
+      });
+
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===== HR Action Log (Audit Trail) =====
+  app.get("/api/hr-action-log", async (req, res) => {
+    try {
+      const { authorized } = await checkUserRole(req, ["admin"]);
+      if (!authorized) return res.status(403).json({ message: "Admin access required" });
+
+      const filters: any = {};
+      if (req.query.module) filters.module = String(req.query.module);
+      if (req.query.employeeId) filters.employeeId = Number(req.query.employeeId);
+      if (req.query.referenceId) filters.referenceId = Number(req.query.referenceId);
+      const logs = await storage.getHrActionLogs(filters);
+      res.json(logs);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

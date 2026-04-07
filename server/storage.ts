@@ -43,7 +43,9 @@ import {
   type OnDutyRequest, type InsertOnDutyRequest,
   shifts, type Shift, type InsertShift,
   profileChangeRequests, type ProfileChangeRequest, type InsertProfileChangeRequest,
-  attendanceLogs, type AttendanceLog, type InsertAttendanceLog
+  attendanceLogs, type AttendanceLog, type InsertAttendanceLog,
+  salaryAdjustments, type SalaryAdjustment, type InsertSalaryAdjustment,
+  hrActionLog, type HrActionLog, type InsertHrActionLog
 } from "@shared/schema";
 import { eq, desc, and, sql, gte, lte, inArray } from "drizzle-orm";
 
@@ -254,6 +256,13 @@ export interface IStorage {
   createShift(shift: InsertShift): Promise<Shift>;
   updateShift(id: number, updates: Partial<InsertShift>): Promise<Shift>;
   deleteShift(id: number): Promise<void>;
+
+  getSalaryAdjustments(filters?: { employeeId?: number; status?: string }): Promise<SalaryAdjustment[]>;
+  createSalaryAdjustment(adj: InsertSalaryAdjustment): Promise<SalaryAdjustment>;
+  updateSalaryAdjustment(id: number, updates: Partial<InsertSalaryAdjustment>): Promise<SalaryAdjustment>;
+
+  getHrActionLogs(filters?: { module?: string; employeeId?: number; referenceId?: number }): Promise<HrActionLog[]>;
+  createHrActionLog(log: InsertHrActionLog): Promise<HrActionLog>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1185,6 +1194,42 @@ export class DatabaseStorage implements IStorage {
 
   async createAttendanceLog(log: InsertAttendanceLog): Promise<AttendanceLog> {
     const [created] = await db.insert(attendanceLogs).values(log).returning();
+    return created;
+  }
+
+  async getSalaryAdjustments(filters?: { employeeId?: number; status?: string }): Promise<SalaryAdjustment[]> {
+    const conditions = [];
+    if (filters?.employeeId) conditions.push(eq(salaryAdjustments.employeeId, filters.employeeId));
+    if (filters?.status) conditions.push(eq(salaryAdjustments.status, filters.status));
+    if (conditions.length > 0) {
+      return await db.select().from(salaryAdjustments).where(and(...conditions)).orderBy(desc(salaryAdjustments.createdAt));
+    }
+    return await db.select().from(salaryAdjustments).orderBy(desc(salaryAdjustments.createdAt));
+  }
+
+  async createSalaryAdjustment(adj: InsertSalaryAdjustment): Promise<SalaryAdjustment> {
+    const [created] = await db.insert(salaryAdjustments).values(adj).returning();
+    return created;
+  }
+
+  async updateSalaryAdjustment(id: number, updates: Partial<InsertSalaryAdjustment>): Promise<SalaryAdjustment> {
+    const [updated] = await db.update(salaryAdjustments).set({ ...updates, updatedAt: new Date() }).where(eq(salaryAdjustments.id, id)).returning();
+    return updated;
+  }
+
+  async getHrActionLogs(filters?: { module?: string; employeeId?: number; referenceId?: number }): Promise<HrActionLog[]> {
+    const conditions = [];
+    if (filters?.module) conditions.push(eq(hrActionLog.module, filters.module));
+    if (filters?.employeeId) conditions.push(eq(hrActionLog.employeeId, filters.employeeId));
+    if (filters?.referenceId) conditions.push(eq(hrActionLog.referenceId, filters.referenceId));
+    if (conditions.length > 0) {
+      return await db.select().from(hrActionLog).where(and(...conditions)).orderBy(desc(hrActionLog.createdAt));
+    }
+    return await db.select().from(hrActionLog).orderBy(desc(hrActionLog.createdAt));
+  }
+
+  async createHrActionLog(log: InsertHrActionLog): Promise<HrActionLog> {
+    const [created] = await db.insert(hrActionLog).values(log).returning();
     return created;
   }
 }
