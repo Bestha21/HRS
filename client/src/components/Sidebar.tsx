@@ -132,16 +132,20 @@ export function Sidebar() {
     ...(hasHrAccess ? [{ href: "/shift-management", label: "Shift Management", icon: Clock }] : []),
   ];
 
-  const financeLinks = [
-    ...(hasHrAccess || isPayrollTeam ? [{ href: "/payroll", label: "Payroll", icon: DollarSign }] : []),
-    ...(hasHrAccess || isPayrollTeam ? [{ href: "/salary-structures", label: "Salary Structures", icon: DollarSign }] : []),
-    ...(hasHrAccess || isPayrollTeam ? [{ href: "/tax-review", label: "Tax Review", icon: FileCheck }] : []),
-    ...(hasHrAccess || isPayrollTeam ? [{ href: "/expenses", label: "Expenses", icon: Receipt }] : []),
-    ...(hasHrAccess || isProjectTeam ? [{ href: "/projects", label: "Projects", icon: FolderKanban }] : []),
-    ...(hasHrAccess || isPayrollTeam ? [{ href: "/advance-loans", label: "Loans", icon: Banknote }] : []),
-    ...(isAdmin ? [{ href: "/salary-adjustments", label: "Arrears & Adjustments", icon: FileCheck }] : []),
-    ...(hasHrAccess || isPayrollTeam ? [{ href: "/statutory-compliance", label: "Statutory Compliance", icon: Scale }] : []),
-  ];
+ const financeLinks = [
+  // Group the common HR/Payroll links together for cleaner code
+  ...((hasHrAccess || isPayrollTeam || isAdmin) ? [
+    { href: "/payroll", label: "Payroll", icon: DollarSign },
+    { href: "/salary-structures", label: "Salary Structures", icon: DollarSign },
+    { href: "/tax-review", label: "Tax Review", icon: FileCheck },
+    { href: "/expenses", label: "Expenses", icon: Receipt },
+    { href: "/advance-loans", label: "Loans", icon: Banknote },
+    // Explicitly check for admin here as well
+    { href: "/salary-adjustments", label: "Arrears & Adjustments", icon: FileCheck },
+    { href: "/statutory-compliance", label: "Statutory Compliance", icon: Scale }
+  ] : []),
+  ...(hasHrAccess || isProjectTeam ? [{ href: "/projects", label: "Projects", icon: FolderKanban }] : []),
+];
 
   const assetLinks = (isAssetTeam && !isAdmin && !isHrManager) ? [
     { href: "/assets", label: "Asset Administration", icon: Laptop },
